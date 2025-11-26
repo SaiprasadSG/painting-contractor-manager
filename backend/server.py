@@ -10,6 +10,7 @@ import io
 from fastapi.responses import StreamingResponse
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
+import logging
 
 app = FastAPI()
 
@@ -22,10 +23,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB connection
+# MongoDB connection (validate at startup)
+logger = logging.getLogger("uvicorn.error")
+
 MONGO_URL = os.environ.get('MONGO_URL')
-client = AsyncIOMotorClient(MONGO_URL)
-db = client.painting_contractor_db
+client = None
+db = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure MONGO_URL exists and MongoDB is reachable on startup.
+
+    This prints/logs a clear error so hosting logs (Render) show the reason
+    if the service fails to start (missing/invalid MONGO_URL or network error).
+    """
+    global client, db
+    if not MONGO_URL:
+        logger.error("MONGO_URL environment variable is not set. Set MONGO_URL on your host.")
+        raise RuntimeError("MONGO_URL environment variable is not set")
+
+    try:
+        # Use a short server selection timeout so failures surface quickly in logs
+        client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+        # Verify connection with a ping
+        await client.admin.command('ping')
+        db = client.painting_contractor_db
+        logger.info("Successfully connected to MongoDB")
+    except Exception as e:
+        logger.exception("Failed to connect to MongoDB: %s", e)
+        # Re-raise to stop application startup and make the error visible in platform logs
+        raise
 
 # Pydantic Models
 class Site(BaseModel):
